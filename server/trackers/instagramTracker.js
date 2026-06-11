@@ -16,22 +16,14 @@
 
 const axios = require('axios');
 const db    = require('../db/instagramDb');
+const companiesDb = require('../db/companiesDb');
 
 const APIFY_BASE   = 'https://api.apify.com/v2';
 const ACTOR_ID     = 'apify~instagram-reel-scraper'; // official Apify actor
 
-// ─── Tracked Accounts ─────────────────────────────────────────────────────────
-
-const TRACKED_ACCOUNTS = [
-  { brand: 'Gritzo',            username: 'gritzo_sports'       },
-  { brand: 'Slurrp Farm',       username: 'slurrpfarm'          },
-  { brand: 'Whole Truth Foods', username: 'the.whole.truth'     },
-  { brand: 'Tummy Friendly',    username: 'tummyfriendlyfoods'  },
-  { brand: 'PediaSure',         username: 'pediasureindia'      },
-  { brand: 'Bournvita',         username: 'bournvita'           },
-  { brand: 'Horlicks',          username: 'horlicksindia'       },
-  { brand: 'Little Joys',       username: 'little.joys.in'      }, // track yourself too
-];
+// TRACKED_ACCOUNTS is now loaded at runtime from companiesDb.
+// Kept here for reference / manual override only.
+const TRACKED_ACCOUNTS = [];
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 

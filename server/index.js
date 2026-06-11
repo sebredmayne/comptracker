@@ -6,6 +6,7 @@ const path    = require('path');
 const metaRoutes      = require('./routes/metaRoutes');
 const youtubeRoutes   = require('./routes/youtubeRoutes');
 const instagramRoutes = require('./routes/instagramRoutes');
+const companiesRoutes = require('./routes/companiesRoutes');
 
 const { scheduleMetaTracker }      = require('./schedule/metaCron');
 const { scheduleYouTubeTracker }   = require('./schedule/youtubeCron');
@@ -22,6 +23,7 @@ app.use(express.json());
 app.use('/api/meta',      metaRoutes);
 app.use('/api/youtube',   youtubeRoutes);
 app.use('/api/instagram', instagramRoutes);
+app.use('/api',           companiesRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

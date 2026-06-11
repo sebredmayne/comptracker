@@ -11,20 +11,13 @@
 
 const axios = require('axios');
 const db = require('../db/metaDb');
+const companiesDb = require('../db/companiesDb');
 
 const BASE_URL = 'https://graph.facebook.com/v19.0/ads_archive';
 
-// Brands to track — add/remove as needed
-const TRACKED_BRANDS = [
-  { name: 'Gritzo',            search_terms: ['Gritzo'] },
-  { name: 'Slurrp Farm',       search_terms: ['Slurrp Farm'] },
-  { name: 'Whole Truth Foods', search_terms: ['The Whole Truth'] },
-  { name: 'Tummy Friendly',    search_terms: ['Tummy Friendly Foods'] },
-  { name: 'PediaSure',         search_terms: ['PediaSure'] },
-  { name: 'Bournvita',         search_terms: ['Bournvita'] },
-  { name: 'Horlicks',          search_terms: ['Horlicks'] },
-  { name: 'Little Joys',       search_terms: ['Little Joys'] },  // track yourself too
-];
+// TRACKED_BRANDS is now loaded at runtime from companiesDb.
+// Kept here for reference / manual override only.
+const TRACKED_BRANDS = [];
 
 // Fields to fetch from the API
 const FIELDS = [
@@ -136,7 +129,15 @@ async function runMetaTracker() {
   console.log('[Meta Tracker] Starting run...');
   const results = { brands: [], newAds: 0, updatedAds: 0, errors: [] };
 
-  for (const brand of TRACKED_BRANDS) {
+  // Load brands dynamically from companies DB
+  const trackedBrands = companiesDb.getActiveCompanies()
+    .filter(c => c.meta_search_terms && c.meta_search_terms.trim())
+    .map(c => ({
+      name:         c.name,
+      search_terms: c.meta_search_terms.split(',').map(t => t.trim()).filter(Boolean),
+    }));
+
+  for (const brand of trackedBrands) {
     const brandResult = { name: brand.name, adsFound: 0, topAds: [] };
 
     for (const term of brand.search_terms) {
@@ -188,7 +189,7 @@ async function runMetaTracker() {
     ran_at: new Date().toISOString(),
     new_ads: results.newAds,
     updated_ads: results.updatedAds,
-    brands_checked: TRACKED_BRANDS.length,
+    brands_checked: trackedBrands.length,
   });
 
   console.log(`[Meta Tracker] Done. New: ${results.newAds}, Updated: ${results.updatedAds}`);

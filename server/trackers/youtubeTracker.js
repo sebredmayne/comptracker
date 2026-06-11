@@ -13,22 +13,13 @@
 
 const axios = require('axios');
 const db = require('../db/youtubeDb');
+const companiesDb = require('../db/companiesDb');
 
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
-// ─── Tracked Channels ─────────────────────────────────────────────────────────
-// Find channel IDs by going to a channel page → view-source → search "channelId"
-// Or use: https://commentpicker.com/youtube-channel-id.php
-
-const TRACKED_CHANNELS = [
-  { brand: 'Gritzo',            channelId: 'UCxxxxxxxxxxxxxxxxxxxxxxxx', handle: '@gritzo' },
-  { brand: 'Slurrp Farm',       channelId: 'UCxxxxxxxxxxxxxxxxxxxxxxxx', handle: '@slurrpfarm' },
-  { brand: 'Whole Truth Foods', channelId: 'UCxxxxxxxxxxxxxxxxxxxxxxxx', handle: '@thewholetruthefoods' },
-  { brand: 'Tummy Friendly',    channelId: 'UCxxxxxxxxxxxxxxxxxxxxxxxx', handle: '@tummyfriendlyfoods' },
-  { brand: 'PediaSure',         channelId: 'UCxxxxxxxxxxxxxxxxxxxxxxxx', handle: '@pediasureindia' },
-  { brand: 'Bournvita',         channelId: 'UCxxxxxxxxxxxxxxxxxxxxxxxx', handle: '@bournvita' },
-  { brand: 'Little Joys',       channelId: 'UCxxxxxxxxxxxxxxxxxxxxxxxx', handle: '@littlejoys' },
-];
+// TRACKED_CHANNELS is now loaded at runtime from companiesDb.
+// Kept here for reference / manual override only.
+const TRACKED_CHANNELS = [];
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
@@ -179,7 +170,16 @@ async function runYouTubeTracker() {
   console.log('[YouTube Tracker] Starting run...');
   const results = { channels: [], viralVideos: 0, newCollabs: 0, errors: [] };
 
-  for (const channel of TRACKED_CHANNELS) {
+  // Load channels dynamically from companies DB
+  const trackedChannels = companiesDb.getActiveCompanies()
+    .filter(c => c.youtube_channel_id && !c.youtube_channel_id.includes('UCxxxxxxxxx'))
+    .map(c => ({
+      brand:     c.name,
+      channelId: c.youtube_channel_id,
+      handle:    c.youtube_handle || '',
+    }));
+
+  for (const channel of trackedChannels) {
     console.log(`[YouTube Tracker] Processing ${channel.brand}...`);
 
     try {

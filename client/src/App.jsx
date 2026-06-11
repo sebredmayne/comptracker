@@ -2,15 +2,17 @@ import { useState, useEffect } from 'react'
 import MetaDashboard from './components/meta/MetaDashboard'
 import YTDashboard from './components/youtube/YTDashboard'
 import IGDashboard from './components/instagram/IGDashboard'
+import DigestPage from './components/DigestPage'
 
 const NAV = [
+  { id: 'digest',    label: 'Digest',    icon: '📋' },
   { id: 'meta',      label: 'Meta Ads',  icon: '📣' },
   { id: 'youtube',   label: 'YouTube',   icon: '▶️'  },
   { id: 'instagram', label: 'Instagram', icon: '📸'  },
 ]
 
 export default function App() {
-  const [active, setActive] = useState('meta')
+  const [active, setActive] = useState('digest')
   const [health, setHealth] = useState(null)
 
   useEffect(() => {
@@ -56,6 +58,7 @@ export default function App() {
       )}
 
       <main>
+        {active === 'digest'    && <DigestPage />}
         {active === 'meta'      && <MetaDashboard />}
         {active === 'youtube'   && <YTDashboard />}
         {active === 'instagram' && <IGDashboard />}
