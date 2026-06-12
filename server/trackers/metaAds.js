@@ -1,114 +1,66 @@
 /**
- * Meta Ad Library Tracker
- * Polls Meta's Ad Library API for competitor ads on Facebook + Instagram.
- * Tracks: top ads by estimated impressions, hooks (first line of copy),
- * new creatives, long-running ads (proxy for top performers).
+ * Meta Ad Library Tracker (via SearchAPI.io)
+ * Uses SearchAPI's facebook_ad_library engine — no Meta developer app needed.
  *
- * API Docs: https://www.facebook.com/ads/library/api/
- * Requires: META_ACCESS_TOKEN in .env (a Facebook User or App token
- *           with the `ads_read` permission granted via Ad Library API access)
+ * Docs: https://www.searchapi.io/docs/facebook-ad-library
+ * Requires: SEARCHAPI_KEY in .env
  */
 
 const axios = require('axios');
 const db = require('../db/metaDb');
 const companiesDb = require('../db/companiesDb');
 
-const BASE_URL = 'https://graph.facebook.com/v19.0/ads_archive';
+const SEARCHAPI_URL = 'https://www.searchapi.io/api/v1/search';
 
-// TRACKED_BRANDS is now loaded at runtime from companiesDb.
-// Kept here for reference / manual override only.
-const TRACKED_BRANDS = [];
-
-// Fields to fetch from the API
-const FIELDS = [
-  'id',
-  'ad_creative_body',
-  'ad_creative_link_caption',
-  'ad_creative_link_description',
-  'ad_creative_link_title',
-  'ad_delivery_start_time',
-  'ad_delivery_stop_time',
-  'ad_snapshot_url',
-  'currency',
-  'impressions',          // returns { lower_bound, upper_bound } — estimated range
-  'page_name',
-  'publisher_platforms',  // ["facebook", "instagram", etc.]
-  'spend',                // { lower_bound, upper_bound }
-  'bylines',
-  'estimated_audience_size',
-].join(',');
-
-/**
- * Extract the "hook" — first meaningful sentence/line of ad copy.
- */
 function extractHook(body) {
   if (!body) return null;
-  // Take text up to first newline, period, or emoji sequence (≤120 chars)
   const firstLine = body.split(/[\n.!?]/)[0].trim();
   return firstLine.length > 5 ? firstLine.slice(0, 150) : body.slice(0, 150);
 }
 
-/**
- * Convert Meta's impression range string to a sortable midpoint number.
- * Meta returns ranges like "1000-4999", "5000-9999", "≥10000"
- */
-function impressionMidpoint(impressions) {
-  if (!impressions) return 0;
-  const { lower_bound, upper_bound } = impressions;
-  const lo = parseInt(lower_bound) || 0;
-  const hi = parseInt(upper_bound) || lo * 2;
+function impressionMidpoint(lower, upper) {
+  const lo = parseInt(lower) || 0;
+  const hi = parseInt(upper) || lo * 2;
   return Math.round((lo + hi) / 2);
 }
 
-/**
- * Calculate how many days an ad has been running (proxy for spend/performance).
- */
 function daysRunning(startTime) {
   if (!startTime) return 0;
-  const start = new Date(startTime);
-  const now = new Date();
-  return Math.floor((now - start) / (1000 * 60 * 60 * 24));
+  return Math.floor((Date.now() - new Date(startTime)) / 86400000);
 }
 
-/**
- * Fetch all active ads for a given search term from Meta Ad Library.
- * Handles pagination automatically.
- */
-async function fetchAdsForBrand(brandName, searchTerm, token) {
+async function fetchAdsForBrand(brandName, searchTerm, apiKey) {
   const ads = [];
-  let url = BASE_URL;
-  let params = {
-    access_token: token,
-    search_terms: searchTerm,
-    ad_reached_countries: ['IN'],   // India — change if needed
-    ad_active_status: 'ACTIVE',
-    ad_type: 'ALL',
-    fields: FIELDS,
-    limit: 50,
-  };
-
+  let pageToken = null;
   let pageCount = 0;
-  const MAX_PAGES = 5; // cap at 250 ads per brand per run
+  const MAX_PAGES = 5;
 
-  while (url && pageCount < MAX_PAGES) {
+  while (pageCount < MAX_PAGES) {
     try {
-      const response = await axios.get(url, { params });
-      const data = response.data;
+      const params = {
+        engine:       'facebook_ad_library',
+        api_key:      apiKey,
+        q:            searchTerm,
+        country:      'IN',
+        ad_type:      'ALL',
+        ad_active_status: 'ACTIVE',
+      };
+      if (pageToken) params.page_token = pageToken;
 
-      if (data.data) {
-        ads.push(...data.data.map(ad => ({ ...ad, _brandName: brandName })));
+      const { data } = await axios.get(SEARCHAPI_URL, { params });
+      const results = data.ads || [];
+
+      for (const ad of results) {
+        ads.push({ ...ad, _brandName: brandName });
       }
 
-      // Follow pagination cursor
-      url = data.paging?.next || null;
-      params = {}; // next URL already has params baked in
+      pageToken = data.pagination?.next_page_token || null;
+      if (!pageToken) break;
       pageCount++;
-
-      // Respect rate limits — Meta allows ~200 calls/hour for Ad Library
-      await sleep(500);
+      await sleep(600);
     } catch (err) {
-      const msg = err.response?.data?.error?.message || err.message;
-      console.error(`[Meta Tracker] Error fetching ads for "${brandName}": ${msg}`);
+      const msg = err.response?.data?.error || err.message;
+      console.error(`[Meta Tracker] Error fetching "${brandName}": ${msg}`);
       break;
     }
   }
@@ -116,22 +68,18 @@ async function fetchAdsForBrand(brandName, searchTerm, token) {
   return ads;
 }
 
-/**
- * Main tracker function — call this on a schedule (e.g. daily via node-cron).
- */
 async function runMetaTracker() {
-  const token = process.env.META_ACCESS_TOKEN;
-  if (!token) {
-    console.error('[Meta Tracker] META_ACCESS_TOKEN not set in .env');
-    return { error: 'META_ACCESS_TOKEN missing' };
+  const apiKey = process.env.SEARCHAPI_KEY;
+  if (!apiKey) {
+    console.error('[Meta Tracker] SEARCHAPI_KEY not set in .env');
+    return { error: 'SEARCHAPI_KEY missing' };
   }
 
   console.log('[Meta Tracker] Starting run...');
   const results = { brands: [], newAds: 0, updatedAds: 0, errors: [] };
 
-  // Load brands dynamically from companies DB
   const trackedBrands = companiesDb.getActiveCompanies()
-    .filter(c => c.meta_search_terms && c.meta_search_terms.trim())
+    .filter(c => c.meta_search_terms?.trim())
     .map(c => ({
       name:         c.name,
       search_terms: c.meta_search_terms.split(',').map(t => t.trim()).filter(Boolean),
@@ -141,55 +89,59 @@ async function runMetaTracker() {
     const brandResult = { name: brand.name, adsFound: 0, topAds: [] };
 
     for (const term of brand.search_terms) {
-      const ads = await fetchAdsForBrand(brand.name, term, token);
+      const ads = await fetchAdsForBrand(brand.name, term, apiKey);
       brandResult.adsFound += ads.length;
 
       for (const ad of ads) {
+        // SearchAPI field mapping (differs from graph.facebook.com)
+        const body     = ad.ad_creative_bodies?.[0] || ad.body || null;
+        const title    = ad.ad_creative_link_titles?.[0] || ad.title || null;
+        const platforms = Array.isArray(ad.publisher_platforms)
+          ? ad.publisher_platforms.join(',')
+          : (ad.publisher_platforms || 'unknown');
+
         const processed = {
-          ad_id: ad.id,
-          brand_name: brand.name,
-          page_name: ad.page_name || brand.name,
-          hook: extractHook(ad.ad_creative_body || ad.ad_creative_link_title),
-          body: ad.ad_creative_body || null,
-          link_title: ad.ad_creative_link_title || null,
-          link_description: ad.ad_creative_link_description || null,
-          snapshot_url: ad.ad_snapshot_url || null,
-          platforms: ad.publisher_platforms ? ad.publisher_platforms.join(',') : 'unknown',
-          impression_lower: ad.impressions?.lower_bound || 0,
-          impression_upper: ad.impressions?.upper_bound || 0,
-          impression_midpoint: impressionMidpoint(ad.impressions),
-          spend_lower: ad.spend?.lower_bound || 0,
-          spend_upper: ad.spend?.upper_bound || 0,
-          start_date: ad.ad_delivery_start_time || null,
-          stop_date: ad.ad_delivery_stop_time || null,
-          days_running: daysRunning(ad.ad_delivery_start_time),
-          first_seen: new Date().toISOString(),
-          last_seen: new Date().toISOString(),
+          ad_id:              ad.id || ad.ad_archive_id || String(Date.now()),
+          brand_name:         brand.name,
+          page_name:          ad.page_name || brand.name,
+          hook:               extractHook(body || title),
+          body:               body,
+          link_title:         title,
+          link_description:   ad.ad_creative_link_descriptions?.[0] || null,
+          snapshot_url:       ad.ad_snapshot_url || null,
+          platforms:          platforms,
+          impression_lower:   ad.impressions?.lower_bound || 0,
+          impression_upper:   ad.impressions?.upper_bound || 0,
+          impression_midpoint: impressionMidpoint(
+            ad.impressions?.lower_bound,
+            ad.impressions?.upper_bound
+          ),
+          spend_lower:        ad.spend?.lower_bound || 0,
+          spend_upper:        ad.spend?.upper_bound || 0,
+          start_date:         ad.ad_delivery_start_time || null,
+          stop_date:          ad.ad_delivery_stop_time || null,
+          days_running:       daysRunning(ad.ad_delivery_start_time),
+          first_seen:         new Date().toISOString(),
+          last_seen:          new Date().toISOString(),
         };
 
         const isNew = db.upsertAd(processed);
-        if (isNew) {
-          results.newAds++;
-        } else {
-          results.updatedAds++;
-        }
+        if (isNew) results.newAds++;
+        else results.updatedAds++;
       }
 
-      // Small delay between brand searches
       await sleep(1000);
     }
 
-    // Pull top 10 ads for this brand by impression midpoint
     brandResult.topAds = db.getTopAdsByBrand(brand.name, 10);
     results.brands.push(brandResult);
   }
 
-  // Log the run
   db.logRun({
-    ran_at: new Date().toISOString(),
-    new_ads: results.newAds,
-    updated_ads: results.updatedAds,
-    brands_checked: trackedBrands.length,
+    ran_at:          new Date().toISOString(),
+    new_ads:         results.newAds,
+    updated_ads:     results.updatedAds,
+    brands_checked:  trackedBrands.length,
   });
 
   console.log(`[Meta Tracker] Done. New: ${results.newAds}, Updated: ${results.updatedAds}`);
@@ -200,4 +152,4 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-module.exports = { runMetaTracker, TRACKED_BRANDS };
+module.exports = { runMetaTracker };

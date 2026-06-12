@@ -31,7 +31,7 @@ app.get('/api/health', (req, res) => {
     status: 'ok',
     timestamp: new Date().toISOString(),
     env: {
-      meta:      !!process.env.META_ACCESS_TOKEN,
+      meta:      !!process.env.SEARCHAPI_KEY,
       youtube:   !!process.env.YOUTUBE_API_KEY,
       instagram: !!process.env.APIFY_TOKEN,
     },
@@ -50,7 +50,7 @@ if (process.env.NODE_ENV === 'production') {
 app.listen(PORT, () => {
   console.log(`\n🚀 Server running at http://localhost:${PORT}`);
   console.log(`\n🔑 API keys loaded:`);
-  console.log(`   Meta:      ${process.env.META_ACCESS_TOKEN ? '✅' : '❌ Missing META_ACCESS_TOKEN'}`);
+  console.log(`   Meta:      ${process.env.SEARCHAPI_KEY ? '✅' : '❌ Missing SEARCHAPI_KEY'}`);
   console.log(`   YouTube:   ${process.env.YOUTUBE_API_KEY   ? '✅' : '❌ Missing YOUTUBE_API_KEY'}`);
   console.log(`   Instagram: ${process.env.APIFY_TOKEN       ? '✅' : '❌ Missing APIFY_TOKEN'}`);
 
