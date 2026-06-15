@@ -124,44 +124,29 @@ function upsertVideo(video) {
 function upsertChannel(ch) { stmtUpsertChannel.run(ch); }
 function logRun(run) { stmtLogRun.run(run); }
 
-function getViralVideos({ brand, limit = 20 } = {}) {
-  if (brand) {
-    return db.prepare(`
-      SELECT * FROM yt_videos WHERE is_viral = 1 AND brand_name = ?
-      ORDER BY viral_multiple DESC, view_count DESC LIMIT ?
-    `).all(brand, limit);
-  }
-  return db.prepare(`
-    SELECT * FROM yt_videos WHERE is_viral = 1
-    ORDER BY viral_multiple DESC, view_count DESC LIMIT ?
-  `).all(limit);
+function buildWhere(filters) {
+  const conds = [], params = [];
+  if (filters.brand) { conds.push('brand_name = ?'); params.push(filters.brand); }
+  if (filters.since) { conds.push('published_at >= ?'); params.push(filters.since); }
+  if (filters.extra) { conds.push(filters.extra); }
+  return { where: conds.length ? `WHERE ${conds.join(' AND ')}` : '', params };
 }
 
-function getCollabVideos({ brand, limit = 20 } = {}) {
-  if (brand) {
-    return db.prepare(`
-      SELECT * FROM yt_videos WHERE is_collab = 1 AND brand_name = ?
-      ORDER BY published_at DESC LIMIT ?
-    `).all(brand, limit);
-  }
-  return db.prepare(`
-    SELECT * FROM yt_videos WHERE is_collab = 1
-    ORDER BY published_at DESC LIMIT ?
-  `).all(limit);
+function getViralVideos({ brand, limit = 20, since } = {}) {
+  const { where, params } = buildWhere({ brand, since, extra: 'is_viral = 1' });
+  return db.prepare(`SELECT * FROM yt_videos ${where} ORDER BY view_count DESC LIMIT ?`).all(...params, limit);
 }
 
-function getAllVideos({ brand, limit = 30, sort = 'view_count' } = {}) {
+function getCollabVideos({ brand, limit = 20, since } = {}) {
+  const { where, params } = buildWhere({ brand, since, extra: 'is_collab = 1' });
+  return db.prepare(`SELECT * FROM yt_videos ${where} ORDER BY published_at DESC LIMIT ?`).all(...params, limit);
+}
+
+function getAllVideos({ brand, limit = 50, sort = 'published_at', since } = {}) {
   const allowed = ['view_count', 'published_at', 'viral_multiple', 'like_count'];
-  const col = allowed.includes(sort) ? sort : 'view_count';
-  if (brand) {
-    return db.prepare(`
-      SELECT * FROM yt_videos WHERE brand_name = ?
-      ORDER BY ${col} DESC LIMIT ?
-    `).all(brand, limit);
-  }
-  return db.prepare(`
-    SELECT * FROM yt_videos ORDER BY ${col} DESC LIMIT ?
-  `).all(limit);
+  const col = allowed.includes(sort) ? sort : 'published_at';
+  const { where, params } = buildWhere({ brand, since });
+  return db.prepare(`SELECT * FROM yt_videos ${where} ORDER BY ${col} DESC LIMIT ?`).all(...params, limit);
 }
 
 function getChannels() {
