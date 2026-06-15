@@ -158,13 +158,16 @@ function getSponsoredReels({ brand, limit = 20 } = {}) {
     ORDER BY posted_at DESC LIMIT ?`).all(limit);
 }
 
-function getAllReels({ brand, limit = 30, sort = 'view_count' } = {}) {
+function getAllReels({ brand, limit = 50, sort = 'posted_at', since } = {}) {
   const safe = ['view_count', 'posted_at', 'viral_multiple', 'like_count', 'share_count'];
-  const col  = safe.includes(sort) ? sort : 'view_count';
-  if (brand) {
-    return db.prepare(`SELECT * FROM ig_reels WHERE brand_name=? ORDER BY ${col} DESC LIMIT ?`).all(brand, limit);
-  }
-  return db.prepare(`SELECT * FROM ig_reels ORDER BY ${col} DESC LIMIT ?`).all(limit);
+  const col  = safe.includes(sort) ? sort : 'posted_at';
+  const conditions = [];
+  const params = [];
+  if (brand)  { conditions.push('brand_name = ?'); params.push(brand); }
+  if (since)  { conditions.push('posted_at >= ?'); params.push(since); }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  params.push(limit);
+  return db.prepare(`SELECT * FROM ig_reels ${where} ORDER BY ${col} DESC LIMIT ?`).all(...params);
 }
 
 function getAccounts() {

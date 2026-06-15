@@ -54,6 +54,11 @@ if (count.c === 0) {
   ]);
 }
 
+// ─── Migrations — fix known bad handles ───────────────────────────────────────
+// These run every boot and are idempotent (UPDATE only changes if value differs)
+db.prepare(`UPDATE companies SET instagram_handle='gritzo_official' WHERE name='Gritzo' AND instagram_handle='gritzo'`).run();
+db.prepare(`UPDATE companies SET instagram_handle='littlejoysin' WHERE name='Little Joys' AND instagram_handle='littlejoys'`).run();
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 function getAllCompanies() {

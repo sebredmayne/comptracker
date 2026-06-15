@@ -170,7 +170,11 @@ async function runInstagramTracker() {
   console.log('[Instagram Tracker] Starting run...');
   const results = { accounts: [], viralReels: 0, newCollabs: 0, errors: [] };
 
-  for (const account of TRACKED_ACCOUNTS) {
+  const trackedAccounts = companiesDb.getActiveCompanies()
+    .filter(c => c.instagram_handle && c.instagram_handle.trim())
+    .map(c => ({ brand: c.name, username: c.instagram_handle.trim().replace(/^@/, '') }));
+
+  for (const account of trackedAccounts) {
     console.log(`[Instagram Tracker] Fetching @${account.username} (${account.brand})...`);
 
     try {

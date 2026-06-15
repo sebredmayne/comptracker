@@ -7,7 +7,8 @@
 
 const express = require('express');
 const router  = express.Router();
-const { runInstagramTracker, TRACKED_ACCOUNTS } = require('../trackers/instagramTracker');
+const { runInstagramTracker } = require('../trackers/instagramTracker');
+const companiesDb = require('../db/companiesDb');
 const db = require('../db/instagramDb');
 
 let isRunning = false;
@@ -19,13 +20,14 @@ router.get('/runs',    (req, res) => { try { res.json(db.getRecentRuns()); } cat
 router.get('/status',  (req, res) => { res.json({ running: isRunning }); });
 
 router.get('/brands/list', (req, res) => {
-  res.json(TRACKED_ACCOUNTS.map(a => a.brand));
+  res.json(companiesDb.getActiveCompanies().map(c => c.name));
 });
 
 router.get('/reels', (req, res) => {
   try {
-    const { brand, limit = 30, sort = 'view_count' } = req.query;
-    res.json(db.getAllReels({ brand, limit: parseInt(limit), sort }));
+    const { brand, limit = 50, sort = 'posted_at', days } = req.query;
+    const since = days ? new Date(Date.now() - days * 86400000).toISOString() : null;
+    res.json(db.getAllReels({ brand, limit: parseInt(limit), sort, since }));
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
