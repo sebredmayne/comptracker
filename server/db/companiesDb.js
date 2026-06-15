@@ -44,8 +44,8 @@ if (count.c === 0) {
   });
 
   seed([
-    { name: 'Little Joys',       meta_search_terms: 'Little Joys',    youtube_channel_id: null, youtube_handle: null, instagram_handle: 'littlejoys' },
-    { name: 'Gritzo',            meta_search_terms: 'Gritzo',         youtube_channel_id: null, youtube_handle: null, instagram_handle: 'gritzo' },
+    { name: 'Little Joys',       meta_search_terms: 'Little Joys',    youtube_channel_id: null, youtube_handle: null, instagram_handle: 'our.littlejoys' },
+    { name: 'Gritzo',            meta_search_terms: 'Gritzo',         youtube_channel_id: null, youtube_handle: null, instagram_handle: 'gritzoindia' },
     { name: 'Slurrp Farm',       meta_search_terms: 'Slurrp Farm',    youtube_channel_id: null, youtube_handle: null, instagram_handle: 'slurrpfarm' },
     { name: 'Whole Truth Foods', meta_search_terms: 'The Whole Truth', youtube_channel_id: null, youtube_handle: null, instagram_handle: 'thewholetruthfoods' },
     { name: 'PediaSure',         meta_search_terms: 'PediaSure',      youtube_channel_id: null, youtube_handle: null, instagram_handle: 'pediasure_india' },
@@ -55,9 +55,9 @@ if (count.c === 0) {
 }
 
 // ─── Migrations — fix known bad handles ───────────────────────────────────────
-// These run every boot and are idempotent (UPDATE only changes if value differs)
-db.prepare(`UPDATE companies SET instagram_handle='gritzo_official' WHERE name='Gritzo' AND instagram_handle='gritzo'`).run();
-db.prepare(`UPDATE companies SET instagram_handle='littlejoysin' WHERE name='Little Joys' AND instagram_handle='littlejoys'`).run();
+db.prepare(`UPDATE companies SET instagram_handle='our.littlejoys' WHERE name='Little Joys'`).run();
+db.prepare(`UPDATE companies SET instagram_handle='gritzoindia' WHERE name='Gritzo'`).run();
+db.prepare(`UPDATE companies SET instagram_handle='slurrpfarm' WHERE name='Slurrp Farm'`).run();
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
