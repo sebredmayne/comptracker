@@ -1,20 +1,12 @@
 /**
- * YouTube Partnership Tracker
- * Searches YouTube for influencer/creator videos that mention or promote
- * competitor brands — NOT the brands' own channel uploads.
+ * YouTube Tracker — two modes combined:
+ * 1. Brand's own channel: fetches their recent uploads (paid/organic content)
+ * 2. Partnership search: finds influencer videos mentioning the brand
  *
- * Strategy: For each brand, run multiple search queries:
- *   - "<brand> review"
- *   - "<brand> sponsored"
- *   - "<brand> #ad"
- *   - "<brand> collab"
- * Then filter out the brand's own channel (if known), detect sponsorship
- * signals in title/description, and flag high-view videos.
+ * Channel IDs are auto-discovered via YouTube search if not stored in DB.
  *
- * API Docs: https://developers.google.com/youtube/v3/docs/search
  * Requires: YOUTUBE_API_KEY in .env
- * Quota cost: ~100 units per search query. With 7 brands × 4 queries = 2800 units/run.
- * Free quota: 10,000 units/day — safe for one daily run.
+ * Quota: ~100 units/search + ~1 unit/video detail. Safe within 10K/day free quota.
  */
 
 const axios = require('axios');
@@ -23,106 +15,133 @@ const companiesDb = require('../db/companiesDb');
 
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
-// Search queries appended to each brand name
-const SEARCH_SUFFIXES = [
-  'review',
-  '#ad sponsored',
-  'collab gifted',
-  'honest opinion',
-];
+const LOOKBACK_DAYS     = 14;
+const MAX_OWN_VIDEOS    = 20;
+const VIRAL_MULTIPLIER  = 3.0;
+const MIN_PARTNER_VIEWS = 5000;
 
-// Sponsorship/collab signals to detect in title + description
+// Search suffixes for partnership detection
+const PARTNER_QUERIES = ['review', '#ad sponsored', 'collab gifted', 'honest opinion'];
+
+// Sponsorship signals
 const SPONSOR_KEYWORDS = [
   '#ad', '#sponsored', '#gifted', '#collab', '#brandpartner',
   'sponsored by', 'gifted by', 'in partnership with', 'paid partnership',
-  'this video is sponsored', 'thank you to', 'use code', 'use my code',
-  'discount code', 'affiliate', 'ambassador',
+  'this video is sponsored', 'use code', 'use my code', 'discount code', 'affiliate',
 ];
-
-// High-confidence sponsorship — these alone are enough
 const STRONG_SIGNALS = ['#ad', '#sponsored', 'paid partnership', 'sponsored by', 'gifted by'];
-
-// Views threshold to be worth tracking (filters out tiny channels)
-const MIN_VIEWS = 5000;
-
-// How far back to search (days)
-const LOOKBACK_DAYS = 14;
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
+function publishedAfter(days) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString();
+}
+
 function detectSponsorship(title = '', description = '') {
   const text = `${title} ${description}`.toLowerCase();
-  const found = SPONSOR_KEYWORDS.filter(kw => text.includes(kw.toLowerCase()));
-  const isStrong = STRONG_SIGNALS.some(kw => text.includes(kw.toLowerCase()));
+  const found = SPONSOR_KEYWORDS.filter(kw => text.includes(kw));
   return {
     isSponsored: found.length > 0,
-    isConfirmed: isStrong,
+    isConfirmed: STRONG_SIGNALS.some(kw => text.includes(kw)),
     signals: found,
   };
 }
 
-function publishedAfter(daysBack) {
-  const d = new Date();
-  d.setDate(d.getDate() - daysBack);
-  return d.toISOString();
+function parseDuration(iso8601) {
+  const m = iso8601?.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!m) return 0;
+  return (parseInt(m[1] || 0) * 3600) + (parseInt(m[2] || 0) * 60) + parseInt(m[3] || 0);
 }
 
-/**
- * Search YouTube for videos mentioning a brand, returns video IDs.
- * Excludes the brand's own channel if youtube_channel_id is known.
- */
-async function searchVideosForBrand(brandName, searchQuery, excludeChannelId, apiKey) {
-  try {
-    const params = {
-      key:            apiKey,
-      part:           'id',
-      q:              searchQuery,
-      type:           'video',
-      order:          'relevance',
-      maxResults:     25,
-      publishedAfter: publishedAfter(LOOKBACK_DAYS),
-      relevanceLanguage: 'en',
-      regionCode:     'IN',
-    };
+// ─── YouTube API helpers ──────────────────────────────────────────────────────
 
-    const res = await axios.get(`${YT_BASE}/search`, { params });
-    let ids = (res.data.items || []).map(i => i.id.videoId);
-
-    // Remove brand's own channel videos if we know the channel ID
-    if (excludeChannelId && excludeChannelId !== 'UCxxxxxxxxxxxxxxxxxxxxxxxx') {
-      // We'd need channelId per result — search only returns videoId in 'id' part
-      // We'll filter after fetching details
-    }
-
-    return ids;
-  } catch (err) {
-    const msg = err.response?.data?.error?.message || err.message;
-    console.error(`[YouTube Tracker] Search error for "${searchQuery}": ${msg}`);
-    return [];
-  }
-}
-
-/**
- * Fetch full stats + metadata for up to 50 video IDs.
- */
 async function fetchVideoDetails(videoIds, apiKey) {
   if (!videoIds.length) return [];
-  const chunks = [];
-  for (let i = 0; i < videoIds.length; i += 50) chunks.push(videoIds.slice(i, i + 50));
-
   const all = [];
-  for (const chunk of chunks) {
+  for (let i = 0; i < videoIds.length; i += 50) {
+    const chunk = videoIds.slice(i, i + 50);
     try {
       const res = await axios.get(`${YT_BASE}/videos`, {
         params: { key: apiKey, id: chunk.join(','), part: 'snippet,statistics,contentDetails' },
       });
       all.push(...(res.data.items || []));
       await sleep(200);
-    } catch (err) {
-      console.error('[YouTube Tracker] fetchVideoDetails error:', err.message);
-    }
+    } catch (e) { console.error('[YT] fetchVideoDetails:', e.message); }
   }
   return all;
+}
+
+/**
+ * Auto-discover a brand's YouTube channel ID by searching for it.
+ * Saves result back to companiesDb so it's only done once.
+ */
+async function discoverChannelId(brand, searchName, apiKey) {
+  try {
+    const res = await axios.get(`${YT_BASE}/search`, {
+      params: {
+        key: apiKey,
+        part: 'snippet',
+        q: `${searchName} official`,
+        type: 'channel',
+        maxResults: 3,
+        regionCode: 'IN',
+      },
+    });
+    const channel = res.data.items?.[0];
+    if (!channel) return null;
+    const channelId = channel.id.channelId;
+    // Save it so we don't search again
+    companiesDb.updateCompany(brand.id, { youtube_channel_id: channelId, youtube_handle: `@${channel.snippet.channelTitle}` });
+    console.log(`[YT] Auto-discovered channel for ${brand.name}: ${channelId}`);
+    return channelId;
+  } catch (e) {
+    console.error(`[YT] Channel discovery failed for ${brand.name}:`, e.message);
+    return null;
+  }
+}
+
+/**
+ * Fetch brand's own recent uploads.
+ */
+async function fetchOwnChannelVideos(channelId, apiKey) {
+  const uploadsPlaylistId = 'UU' + channelId.slice(2);
+  try {
+    const res = await axios.get(`${YT_BASE}/playlistItems`, {
+      params: { key: apiKey, playlistId: uploadsPlaylistId, part: 'contentDetails', maxResults: MAX_OWN_VIDEOS },
+    });
+    const ids = (res.data.items || []).map(i => i.contentDetails.videoId);
+    return fetchVideoDetails(ids, apiKey);
+  } catch (e) {
+    console.error(`[YT] fetchOwnChannelVideos error:`, e.message);
+    return [];
+  }
+}
+
+/**
+ * Search YouTube for influencer/creator videos mentioning the brand.
+ */
+async function searchPartnerVideos(searchName, excludeChannelId, apiKey) {
+  const allIds = new Set();
+  for (const suffix of PARTNER_QUERIES) {
+    try {
+      const res = await axios.get(`${YT_BASE}/search`, {
+        params: {
+          key: apiKey, part: 'id', type: 'video',
+          q: `${searchName} ${suffix}`,
+          order: 'relevance', maxResults: 15,
+          publishedAfter: publishedAfter(LOOKBACK_DAYS),
+          regionCode: 'IN',
+        },
+      });
+      (res.data.items || []).forEach(i => allIds.add(i.id.videoId));
+      await sleep(500);
+    } catch (e) { console.error(`[YT] search error "${searchName} ${suffix}":`, e.message); }
+  }
+  const videos = await fetchVideoDetails([...allIds], apiKey);
+  // Filter out brand's own channel
+  return videos.filter(v => !excludeChannelId || v.snippet.channelId !== excludeChannelId);
 }
 
 // ─── Main tracker ─────────────────────────────────────────────────────────────
@@ -130,100 +149,115 @@ async function fetchVideoDetails(videoIds, apiKey) {
 async function runYouTubeTracker() {
   const apiKey = process.env.YOUTUBE_API_KEY;
   if (!apiKey) {
-    console.error('[YouTube Tracker] YOUTUBE_API_KEY not set in .env');
+    console.error('[YouTube Tracker] YOUTUBE_API_KEY not set');
     return { error: 'YOUTUBE_API_KEY missing' };
   }
 
-  console.log('[YouTube Tracker] Starting partnership search run...');
-  const results = { brands: [], videosFound: 0, sponsoredFound: 0, errors: [] };
-
-  const brands = companiesDb.getActiveCompanies()
-    .filter(c => c.meta_search_terms?.trim()); // use meta_search_terms as the brand name to search
+  console.log('[YouTube Tracker] Starting run (own channel + partnerships)...');
+  const results = { brands: [], ownVideos: 0, partnerVideos: 0, errors: [] };
+  const brands = companiesDb.getActiveCompanies();
 
   for (const brand of brands) {
-    const brandName = brand.name;
-    const searchName = brand.meta_search_terms?.split(',')[0]?.trim() || brandName;
-    const excludeChannelId = brand.youtube_channel_id;
+    const searchName = brand.meta_search_terms?.split(',')[0]?.trim() || brand.name;
+    console.log(`[YouTube Tracker] Processing ${brand.name}...`);
 
-    console.log(`[YouTube Tracker] Searching for "${searchName}" partnerships...`);
-    const seenVideoIds = new Set();
-    let brandVideosFound = 0;
+    // ── 1. Get / discover channel ID ────────────────────────────────────────
+    let channelId = brand.youtube_channel_id;
+    const isPlaceholder = !channelId || channelId.includes('UCxxxxxxx');
+    if (isPlaceholder) {
+      channelId = await discoverChannelId(brand, searchName, apiKey);
+      await sleep(500);
+    }
 
-    for (const suffix of SEARCH_SUFFIXES) {
-      const query = `${searchName} ${suffix}`;
-      const videoIds = await searchVideosForBrand(brandName, query, excludeChannelId, apiKey);
+    // ── 2. Own channel uploads ───────────────────────────────────────────────
+    if (channelId) {
+      const ownVideos = await fetchOwnChannelVideos(channelId, apiKey);
+      const views = ownVideos.map(v => parseInt(v.statistics.viewCount || 0)).filter(Boolean);
+      const avgViews = views.length ? Math.round(views.reduce((a, b) => a + b, 0) / views.length) : 0;
 
-      // Deduplicate across queries
-      const newIds = videoIds.filter(id => !seenVideoIds.has(id));
-      newIds.forEach(id => seenVideoIds.add(id));
+      for (const video of ownVideos) {
+        const viewCount = parseInt(video.statistics.viewCount || 0);
+        const viralMultiple = avgViews > 0 ? viewCount / avgViews : 0;
+        const { isSponsored, signals } = detectSponsorship(video.snippet.title, video.snippet.description);
 
-      if (!newIds.length) { await sleep(500); continue; }
-
-      const videos = await fetchVideoDetails(newIds, apiKey);
-
-      for (const video of videos) {
-        const views    = parseInt(video.statistics.viewCount    || 0);
-        const likes    = parseInt(video.statistics.likeCount    || 0);
-        const comments = parseInt(video.statistics.commentCount || 0);
-
-        // Skip low-view videos and the brand's own channel
-        if (views < MIN_VIEWS) continue;
-        if (excludeChannelId && video.snippet.channelId === excludeChannelId) continue;
-
-        const { isSponsored, isConfirmed, signals } = detectSponsorship(
-          video.snippet.title,
-          video.snippet.description,
-        );
-
-        const record = {
+        db.upsertVideo({
           video_id:          video.id,
-          brand_name:        brandName,
-          channel_id:        video.snippet.channelId,
+          brand_name:        brand.name,
+          channel_id:        channelId,
           channel_name:      video.snippet.channelTitle,
           title:             video.snippet.title,
           description:       (video.snippet.description || '').slice(0, 1000),
           thumbnail_url:     video.snippet.thumbnails?.medium?.url || null,
           published_at:      video.snippet.publishedAt,
-          duration_seconds:  0,
-          view_count:        views,
-          like_count:        likes,
-          comment_count:     comments,
-          channel_avg_views: 0,
-          viral_multiple:    0,
-          is_viral:          views >= 100000 ? 1 : 0,  // 100K+ views = notable
+          duration_seconds:  parseDuration(video.contentDetails?.duration),
+          view_count:        viewCount,
+          like_count:        parseInt(video.statistics.likeCount || 0),
+          comment_count:     parseInt(video.statistics.commentCount || 0),
+          channel_avg_views: avgViews,
+          viral_multiple:    Math.round(viralMultiple * 100) / 100,
+          is_viral:          viralMultiple >= VIRAL_MULTIPLIER ? 1 : 0,
           is_collab:         isSponsored ? 1 : 0,
           collab_signals:    signals.join(', ') || null,
-          is_paid_boost:     isConfirmed ? 1 : 0,       // repurpose field: confirmed sponsorship
-          boost_reason:      isConfirmed ? 'confirmed sponsorship' : null,
+          is_paid_boost:     0,
+          boost_reason:      'own channel',
           subscriber_count:  0,
           tags:              (video.snippet.tags || []).slice(0, 20).join(', '),
           first_seen:        new Date().toISOString(),
           last_seen:         new Date().toISOString(),
-        };
-
-        db.upsertVideo(record);
-        brandVideosFound++;
-        results.videosFound++;
-        if (isSponsored) results.sponsoredFound++;
+        });
+        results.ownVideos++;
       }
-
-      await sleep(1000); // quota breathing room between searches
+      await sleep(1000);
     }
 
-    results.brands.push({ brand: brandName, videosFound: brandVideosFound });
-    console.log(`[YouTube Tracker] ${brandName}: ${brandVideosFound} influencer videos found`);
+    // ── 3. Partnership / influencer search ───────────────────────────────────
+    const partnerVideos = await searchPartnerVideos(searchName, channelId, apiKey);
+    for (const video of partnerVideos) {
+      const viewCount = parseInt(video.statistics.viewCount || 0);
+      if (viewCount < MIN_PARTNER_VIEWS) continue;
+      const { isSponsored, isConfirmed, signals } = detectSponsorship(video.snippet.title, video.snippet.description);
+
+      db.upsertVideo({
+        video_id:          video.id,
+        brand_name:        brand.name,
+        channel_id:        video.snippet.channelId,
+        channel_name:      video.snippet.channelTitle,
+        title:             video.snippet.title,
+        description:       (video.snippet.description || '').slice(0, 1000),
+        thumbnail_url:     video.snippet.thumbnails?.medium?.url || null,
+        published_at:      video.snippet.publishedAt,
+        duration_seconds:  parseDuration(video.contentDetails?.duration),
+        view_count:        viewCount,
+        like_count:        parseInt(video.statistics.likeCount || 0),
+        comment_count:     parseInt(video.statistics.commentCount || 0),
+        channel_avg_views: 0,
+        viral_multiple:    0,
+        is_viral:          viewCount >= 100000 ? 1 : 0,
+        is_collab:         isSponsored ? 1 : 0,
+        collab_signals:    signals.join(', ') || 'found via partnership search',
+        is_paid_boost:     isConfirmed ? 1 : 0,
+        boost_reason:      isConfirmed ? 'confirmed sponsorship' : null,
+        subscriber_count:  0,
+        tags:              (video.snippet.tags || []).slice(0, 20).join(', '),
+        first_seen:        new Date().toISOString(),
+        last_seen:         new Date().toISOString(),
+      });
+      results.partnerVideos++;
+    }
+
+    results.brands.push({ brand: brand.name });
     await sleep(1500);
   }
 
   db.logRun({
-    ran_at:           new Date().toISOString(),
+    ran_at: new Date().toISOString(),
     channels_checked: brands.length,
-    viral_found:      results.videosFound,
-    collabs_found:    results.sponsoredFound,
-    errors:           results.errors.join('; ') || null,
+    viral_found: results.ownVideos,
+    collabs_found: results.partnerVideos,
+    errors: results.errors.join('; ') || null,
   });
 
-  console.log(`[YouTube Tracker] Done. Videos: ${results.videosFound}, Sponsored: ${results.sponsoredFound}`);
+  console.log(`[YouTube Tracker] Done. Own: ${results.ownVideos}, Partnerships: ${results.partnerVideos}`);
   return results;
 }
 
